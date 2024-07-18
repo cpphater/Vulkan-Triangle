@@ -47,7 +47,7 @@
 @set CL_FLAGS=/GR- /EHa- /JMC /analyze /Od /Zi /Oi-
 
 @set COMMON_CL_FLAGS=/Fmmain.map /MT /nologo /Wall /WX
-@set COMMON_LINK_FLAGS=/opt:ref User32.lib C:\VulkanSDK\1.3.268.0\Lib\vulkan-1.lib
+@set COMMON_LINK_FLAGS=/opt:ref User32.lib %VK_SDK_PATH%\Lib\vulkan-1.lib
 @set MAIN_FILE=00_main.c
 
 
