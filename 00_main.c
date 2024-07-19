@@ -1,3 +1,5 @@
+#pragma warning(disable:  4701) // \_ "unitialized" variable (potentially)
+#pragma warning(disable:  4703) // /
 #pragma warning(disable:  4201) // nameless struct/union
 #pragma warning(disable:  4191) // (might be dangerous) type cast (FARPROC to PFN)
 #pragma warning(disable:  5045) // specture mitigation
@@ -1098,6 +1100,64 @@ VkSurfaceKHR vk_create_surface(HINSTANCE hinstance, HWND window, VkInstance inst
     return surface;
 }
 
+static
+VkSwapchainKHR vk_create_swapchain(       VkSurfaceKHR                  surface,
+                                    const VkSurfaceCapabilitiesKHR      capabilities,
+                                    const VkSurfaceFormatKHR            format,
+                                    const VkExtent2D                    extent,
+                                    const u32                           family_index_count,
+                                    const family_index_t                family_indecies[QUEUE_INDEX_ENUM_MAX_SIZE],
+                                    const VkPresentModeKHR              present_mode,
+                                          VkSwapchainKHR                old_swapchain,
+                                          VkDevice                      device)
+{
+    ASSERT(surface);
+    ASSERT(family_indecies);
+    ASSERT(device);
+
+    u32 image_count = capabilities.minImageCount + 1;
+    {
+        if ((image_count > capabilities.maxImageCount)
+                &&
+            (capabilities.minImageCount > 0))
+        {
+            image_count = capabilities.maxImageCount;
+        }
+    }
+
+    const VkSwapchainCreateInfoKHR swapchain_ci = {
+        .sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext                 = NULL,
+        .flags                 = 0x0,
+        .surface               = surface,
+        .minImageCount         = image_count,
+        .imageFormat           = format.format,
+        .imageColorSpace       = format.colorSpace,
+        .imageExtent           = extent,
+        .imageArrayLayers      = 1,
+        .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
+        .imageSharingMode      = VK_SHARING_MODE_CONCURRENT,
+#else
+        .imageSharingMode      = VK_SHARING_MODE_EXCLUSIVE,
+#endif
+        .queueFamilyIndexCount = family_index_count,
+        .pQueueFamilyIndices   = family_indecies,
+        .preTransform          = capabilities.currentTransform,
+        .compositeAlpha        = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode           = present_mode,
+        .clipped               = VK_TRUE,
+        .oldSwapchain          = old_swapchain,
+    };
+
+    VkSwapchainKHR swapchain;
+    VK_ASSERT_FN(VK_SUCCESS ==,
+    vkCreateSwapchainKHR(device, &swapchain_ci, NULL, &swapchain);
+    );
+
+    return swapchain;
+}
+
 //
 // MAIN / ENTRY
 //
@@ -1106,9 +1166,23 @@ VkSurfaceKHR vk_create_surface(HINSTANCE hinstance, HWND window, VkInstance inst
     do                                                                                          \
     {                                                                                           \
         dbgprint("[ERROR_MAIN_RETURN] (%s:%d) "__FMT__"\n", __FILE__,__LINE__, ##__VA_ARGS__);  \
-        return EXIT_FAILURE;                                                                    \
+        goto error_on_main;                                                                     \
     }                                                                                           \
     while(0)
+
+#if DEBUG
+#   define EOM_TELLME_WHERE(__SHOULDBE_ARGS__, __CLEANUP_FN__)      \
+    if (__SHOULDBE_ARGS__)                                          \
+    {                                                               \
+        __CLEANUP_FN__;                                             \
+    }                                                               \
+    else                                                            \
+    {                                                               \
+        dbgprint("error_on_main: %s", STRINGIFY(__CLEANUP_FN__));   \
+    }
+#else
+#   define EOM_TELLME_WHERE(__SHOULDBE_ARGS__, __CLEANUP_FN__) __CLEANUP_FN__
+#endif // DEBUG
 
 int WinMain(_In_     HINSTANCE instance,
             _In_opt_ HINSTANCE _prev_instance,
@@ -1188,63 +1262,70 @@ int WinMain(_In_     HINSTANCE instance,
     // Getting queues
     {
         vkGetDeviceQueue(vk_device, g->PDEV_familes.indecies.graphics, 0, &g->graphics_queue);
-        {
-            ASSERT(g->graphics_queue);
-        }
-
         vkGetDeviceQueue(vk_device, g->PDEV_familes.indecies.present, 0, &g->present_queue);
         {
+            ASSERT(g->graphics_queue);
             ASSERT(g->present_queue);
+
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
+            ASSERT(g->present_queue != g->graphics_queue);
+            ASSERT(g->present_queue != g->graphics_queue);
+#endif
         }
     }
 
-    VkPresentModeKHR vk_present_mode = vk_choose_present_mode(g->swapchain.present_mode, g->swapchain.present_mode_count);
-    VkExtent2D vk_extent = vk_choose_extent_2d(g->swapchain.capabilities, window);
-    VkSurfaceFormatKHR vk_surface_format = vk_choose_surface_format(g->swapchain.format, g->swapchain.format_count);
+    VkPresentModeKHR vk_present_mode     = vk_choose_present_mode(g->swapchain.present_mode,
+                                                                  g->swapchain.present_mode_count);
+    VkExtent2D vk_extent                 = vk_choose_extent_2d(g->swapchain.capabilities, window);
+    VkSurfaceFormatKHR vk_surface_format = vk_choose_surface_format(g->swapchain.format,
+                                                                    g->swapchain.format_count);
     {
         ASSERT(vk_surface_format.format != VK_FORMAT_UNDEFINED);
     }
 
 
-    u32 image_count = g->swapchain.capabilities.minImageCount + 1;
-    {
+    VkSwapchainKHR vk_swapchain = vk_create_swapchain(vk_surface,
+                                                      g->swapchain.capabilities,
+                                                      vk_surface_format,
+                                                      vk_extent,
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
+                                                      g->PDEV_familes.count,
+                                                      g->PDEV_familes.indecies.arr,
+#else
+                                                      0,
+                                                      NULL,
+#endif
+                                                      vk_present_mode,
+                                                      NULL,
+                                                      vk_device);
 
-        if ((image_count > g->swapchain.capabilities.maxImageCount)
-                &&
-            (g->swapchain.capabilities.minImageCount > 0))
-        {
-            image_count = g->swapchain.capabilities.maxImageCount;
-        }
+    if (vk_swapchain == VK_NULL_HANDLE)
+    {
+        ERROR_MAIN_RETURN("vk_create_swapchain()");
     }
 
-    const VkSwapchainCreateInfoKHR swapchain_ci = {
-        .sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .pNext                 = NULL,
-        .flags                 = 0x0,
-        .surface               = vk_surface,
-        .minImageCount         = image_count,
-        .imageFormat           = vk_surface_format.format,
-        .imageColorSpace       = vk_surface_format.colorSpace,
-        .imageExtent           = vk_extent,
-        .imageArrayLayers      = 1,
-        .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-#if VK_USING_DIFFERENT_QUEUE_FAMILIES
-        .imageSharingMode      = VK_SHARING_MODE_CONCURRENT,
-        .queueFamilyIndexCount = QUEUE_INDEX_ENUM_MAX_SIZE,
-        .pQueueFamilyIndices   = (const u32[QUEUE_INDEX_ENUM_MAX_SIZE]){0,0},
-#else
-        .imageSharingMode      = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices   = NULL,
-#endif
-        .preTransform          = 0x0,
-        .compositeAlpha        = 0x0,
-        .presentMode           = vk_present_mode,
-        .clipped               = VK_FALSE,
-        .oldSwapchain          = NULL,
-    };
 
-    UNREFERENCED_PARAMETER(swapchain_ci);
+#if DEBUG
+    {
+        u32 count = 0;
+        VK_ASSERT_FN(VK_SUCCESS ==, 
+        vkGetSwapchainImagesKHR(vk_device, vk_swapchain, &count, NULL);
+        );
+
+        dbgprint("Got %u VkImages from a swapchain", count);
+        ASSERT(count < VK_MAX_COUNT_SWAPCHAIN_IMAGES);
+    }
+#endif
+
+    VkImage vk_image[VK_MAX_COUNT_SWAPCHAIN_IMAGES];
+    u32 count = sizeof_array(vk_image);
+    {
+        VK_ASSERT_FN(VK_SUCCESS ==, 
+        vkGetSwapchainImagesKHR(vk_device, vk_swapchain, &count, vk_image)
+        );
+    }
+
+
 
     while(g_running)
     {
@@ -1255,14 +1336,26 @@ int WinMain(_In_     HINSTANCE instance,
     ASSERT(vk_dbg_messenger);
     ASSERT(vk_instance);
     ASSERT(vk_device);
-    ASSERT(vk_PDEV);
     ASSERT(vk_surface);
+    ASSERT(vk_swapchain);
 
-    vkDestroySurfaceKHR(vk_instance, vk_surface, NULL);
-    vkDestroyDevice(vk_device, NULL);
-    g_vk_destroy_dbg_messenger(vk_instance, vk_dbg_messenger, NULL);
-    vkDestroyInstance(vk_instance, NULL);
-#endif
+error_on_main:
+    EOM_TELLME_WHERE((vk_device && vk_swapchain),
+            vkDestroySwapchainKHR(vk_device, vk_swapchain, NULL)
+    )
+    EOM_TELLME_WHERE((vk_instance && vk_surface),
+            vkDestroySurfaceKHR(vk_instance, vk_surface, NULL)
+    );
+    EOM_TELLME_WHERE((vk_device),
+            vkDestroyDevice(vk_device, NULL);
+    );
+    EOM_TELLME_WHERE((vk_instance && vk_dbg_messenger),
+            g_vk_destroy_dbg_messenger(vk_instance, vk_dbg_messenger, NULL);
+    );
+    EOM_TELLME_WHERE((vk_instance),
+            vkDestroyInstance(vk_instance, NULL);
+    );
+#endif //FIXME
 
     return EXIT_SUCCESS;
 }

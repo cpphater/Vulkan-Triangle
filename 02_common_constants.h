@@ -26,6 +26,7 @@ enum max_counts {
     VK_MAX_COUNT_SURFACE_FORMATS  = 16,
     VK_MAX_COUNT_PRESENT_MODES    = 16,
     VK_MAX_COUNT_EXTENT_2D        = 16,
+    VK_MAX_COUNT_SWAPCHAIN_IMAGES = 1024,
 };
 
 //
