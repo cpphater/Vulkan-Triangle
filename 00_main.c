@@ -146,6 +146,14 @@ struct global_memory {
             slop_t                              _[4];
         }
         vk_physical_device_enumeration_data;
+
+        struct {
+            VkImage vk_image[VK_MAX_COUNT_SWAPCHAIN_IMAGES];
+            VkImageView vk_image_view[VK_MAX_COUNT_SWAPCHAIN_IMAGE_VIEWS];
+
+            u32 vk_image_count;
+            u32 vk_image_view_count;
+        };
     };
 }
 GLOBAL *g = NULL;
@@ -1112,7 +1120,9 @@ VkSwapchainKHR vk_create_swapchain(       VkSurfaceKHR                  surface,
                                           VkDevice                      device)
 {
     ASSERT(surface);
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
     ASSERT(family_indecies);
+#endif
     ASSERT(device);
 
     u32 image_count = capabilities.minImageCount + 1;
@@ -1317,14 +1327,47 @@ int WinMain(_In_     HINSTANCE instance,
     }
 #endif
 
-    VkImage vk_image[VK_MAX_COUNT_SWAPCHAIN_IMAGES];
-    u32 count = sizeof_array(vk_image);
+    g->vk_image_count = VK_MAX_COUNT_SWAPCHAIN_IMAGES;
     {
-        VK_ASSERT_FN(VK_SUCCESS ==, 
-        vkGetSwapchainImagesKHR(vk_device, vk_swapchain, &count, vk_image)
+        VK_ASSERT_FN(VK_SUCCESS ==,
+        vkGetSwapchainImagesKHR(vk_device, vk_swapchain, &g->vk_image_count, g->vk_image)
         );
     }
 
+
+    // Make sure that for each image there is a view (same count)
+    {
+        g->vk_image_view_count = g->vk_image_count;
+    }
+
+    for (u32 i = 0; i < g->vk_image_count; ++i)
+    {
+        const VkImageViewCreateInfo vk_image_view_ci = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext            = NULL,
+            .flags            = 0x0,
+            .image            = g->vk_image[i],
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = vk_surface_format.format,
+            .components       = (const VkComponentMapping) {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+        };
+
+        ASSERT_FN(VK_SUCCESS ==,
+        vkCreateImageView(vk_device, &vk_image_view_ci, NULL, &g->vk_image_view[i])
+        );
+    }
 
 
     while(g_running)
