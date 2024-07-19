@@ -1,6 +1,6 @@
 # About
 Me following this tutorial: https://vulkan-tutorial.com in C.
-Currently at: https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Window_surface
+Currently at: https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Swap_chain
 # Building
 ## Windows
 It is expected that you use command-line (preferably Terminal) with MSVC compiler.
