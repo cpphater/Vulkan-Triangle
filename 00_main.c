@@ -508,6 +508,45 @@ VkBool32 vk_is_family_index_valid(family_index_t index)
     return index < VK_MAX_COUNT_QUEUE_FAMILY;
 }
 
+static
+void dbg_print_VkQueueFlagBits(VkQueueFlagBits flags)
+{
+    if (flags & VK_QUEUE_GRAPHICS_BIT)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_GRAPHICS_BIT));
+    }
+    if (flags & VK_QUEUE_COMPUTE_BIT)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_COMPUTE_BIT));
+    }
+    if (flags & VK_QUEUE_TRANSFER_BIT)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_TRANSFER_BIT));
+    }
+    if (flags & VK_QUEUE_SPARSE_BINDING_BIT)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_SPARSE_BINDING_BIT));
+    }
+    if (flags & VK_QUEUE_PROTECTED_BIT)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_PROTECTED_BIT));
+    }
+    if (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_VIDEO_DECODE_BIT_KHR));
+    }
+    if (flags & VK_QUEUE_OPTICAL_FLOW_BIT_NV)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_OPTICAL_FLOW_BIT_NV));
+    }
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+    if (flags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)
+    {
+        dbgprint("%s", string_VkQueueFlagBits(VK_QUEUE_VIDEO_ENCODE_BIT_KHR));
+    }
+#endif
+}
+
 static inline
 VkBool32 vk_is_PDEV_suitable(        VkPhysicalDevice            device,
                                      VkSurfaceKHR                surface,
@@ -528,44 +567,58 @@ VkBool32 vk_is_PDEV_suitable(        VkPhysicalDevice            device,
             feature->geometryShader
     );
 
-#if FIXME(PICKING_PHYSICAL_DEVICE_SUCKS_ASS)
-    VkBool32 presenting_supported = VK_FALSE;
-    VkBool32 has_graphics         = VK_FALSE;
-    VkBool32 has_presenting       = VK_FALSE;
+    if (!device_ok)
     {
+        return VK_FALSE;
+    }
+
+    {
+#if DEBUG
         for (u32 i = 0; i < family_count; ++i)
         {
+            VkBool32 presenting_supported = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presenting_supported);
-            if (presenting_supported)
-            {
-                ASSERT(has_presenting != VK_TRUE);
-                {
-                    family_indecies->present = i;
-                }
 
-                has_presenting = VK_TRUE;
-            }
-            
-            if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            dbgprint("Queue Family[%u]: can present = %s", i, presenting_supported == VK_TRUE ? "true" : "false");
+            dbg_print_VkQueueFlagBits(family[i].queueFlags);
+        }
+#endif
+
+        for (u32 i = 0; i < family_count; ++i)
+        {
+            VkBool32 got_graphics = vk_is_family_index_valid(family_indecies->graphics);
+            if (!got_graphics)
             {
-#if FIXME(MULTIPLE_QUEUE_FAMILIES_PER_DEVICE)
-                ASSERT(has_graphics != VK_TRUE);
+                if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
                 {
                     family_indecies->graphics = i;
+
+                    got_graphics = VK_TRUE;
                 }
-#endif
-                has_graphics = VK_TRUE;
             }
 
-            if (has_graphics && has_presenting)
+            VkBool32 got_present = vk_is_family_index_valid(family_indecies->present);
+            if (!got_present)
             {
-                break;
+                VkBool32 supported = VK_FALSE;
+                vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &supported);
+                if (supported && (i != family_indecies->graphics))
+                {
+                    family_indecies->present = i;
+
+                    got_present = VK_TRUE;
+                }
+            }
+
+            VkBool32 done = (got_present && got_graphics);
+            if (done)
+            {
+                return VK_TRUE;
             }
         }
     }
-#endif
 
-    return device_ok && has_graphics && has_presenting;
+    return VK_FALSE;
 }
 
 static
@@ -589,10 +642,10 @@ VkPhysicalDevice vk_acquire_PDEV(VkInstance                                  ins
 
     for (u32 i = 0; i < data->device_count; ++i)
     {
-        VkPhysicalDevice*                           device = &data->device[i];
-        VkPhysicalDeviceProperties*             properties = &data->property[i];
-        VkPhysicalDeviceFeatures*                 features = &data->feature[i];
-        union vk_device_queue_family_idx*  family_indecies = &data->family_indecies[i];
+        VkPhysicalDevice*                          device = &data->device[i];
+        VkPhysicalDeviceProperties*            properties = &data->property[i];
+        VkPhysicalDeviceFeatures*                features = &data->feature[i];
+        union vk_device_queue_family_idx* family_indecies = &data->family_indecies[i];
         {
             memset(family_indecies, 0xFF, sizeof(union vk_device_queue_family_idx));
         }
@@ -631,9 +684,7 @@ VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhys
     ASSERT(PDEV);
     ASSERT(indecies.graphics < g->PDEV_familes.count);
 
-#define USING_SAME_QUEUE_FAMILY 1
 
-#if !USING_SAME_QUEUE_FAMILY
     const float graphics_queue_prio[] = {
         [0] = 1.0f,
     };
@@ -652,16 +703,6 @@ VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhys
     {
         ASSERT(present_queue_count < g->PDEV_familes.property[g->PDEV_familes.indecies.present].queueCount);
     }
-#else
-    const float global_queue_prio = 1.0f;
-
-    const float* graphics_queue_prio = &global_queue_prio;
-    const float* present_queue_prio  = &global_queue_prio;
-
-    const u32 graphics_queue_count = 1;
-    const u32 present_queue_count  = 1;
-
-#endif
 
     const VkDeviceQueueCreateInfo queue_ci[] = {
         [QUEUE_INDEX_GRAPHICS] = {
@@ -681,11 +722,6 @@ VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhys
             .pQueuePriorities = present_queue_prio,
         },
     };
-
-#if USING_SAME_QUEUE_FAMILY
-    ASSERT((queue_ci[QUEUE_INDEX_PRESENT].queueCount + queue_ci[QUEUE_INDEX_GRAPHICS].queueCount) < g->PDEV_familes.property[indecies.present].queueCount);
-#endif
-
 
     const VkPhysicalDeviceFeatures device_features = {
         .robustBufferAccess            			 = VK_FALSE,
@@ -875,7 +911,7 @@ int WinMain(_In_     HINSTANCE instance,
         ERROR_MAIN_RETURN("vk_acquire_PDEV()");
     }
 
-    ASSERT(g->PDEV_familes.indecies.graphics == g->PDEV_familes.indecies.present);
+    ASSERT(g->PDEV_familes.indecies.graphics != g->PDEV_familes.indecies.present);
 
     VkDevice vk_device = vk_acquire_LDEV(g->PDEV_familes.indecies, vk_PDEV);
     if (vk_device == VK_NULL_HANDLE)
