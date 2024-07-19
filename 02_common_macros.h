@@ -86,3 +86,24 @@ void assert_callback(literal_t file, const s32 line, literal_t expr);
 
 #define BREAK DebugBreak
 
+
+//
+// Vulkan related asserts
+//
+
+#if ASSERTIVE
+#   define VK_ASSERT_FN(__EQ__, __FN__)                                                             \
+               do                                                                                   \
+               {                                                                                    \
+                   VkResult result = __FN__;                                                        \
+                   if (!(__EQ__ result))                                                               \
+                   {                                                                                \
+                       FMT(g_assert_buf_, "%s: %s", STRINGIFY(__EQ__ (__FN__)), vk_errstr(result)); \
+                       assert_callback(__FILE__,__LINE__, g_assert_buf_);                           \
+                   }                                                                                \
+               }                                                                                    \
+               while(0)
+#else
+#   define VK_ASSERT_FN(__EQ__, __FN__) __FN__
+#endif
+

@@ -67,27 +67,36 @@ enum vk_device_queue_index {
 
 union vk_device_queue_family_idx {
     struct  {
-        family_index_t present;
         family_index_t graphics;
+        family_index_t present;
     };
+
+    family_index_t arr[QUEUE_INDEX_ENUM_MAX_SIZE];
 };
 
 //
 // GLOBALS
 //
 
+char GLOBAL g_assert_buf_[BUFFER_SIZE_ASSERT];
+
 s32 GLOBAL g_running = 0x1;
 
 struct global_memory {
     struct {
-        char  layer_names_buffer[BUFFER_SIZE_VK_LAYER_NAMES];
-        char  EXT_names_buffer[BUFFER_SIZE_VK_EXT_NAMES];
+        char layer_names_buffer[BUFFER_SIZE_VK_LAYER_NAMES];
+        char EXT_names_buffer[BUFFER_SIZE_VK_EXT_NAMES];
+        char PDEV_EXT_names_buffer[BUFFER_SIZE_VK_PDEV_EXT_NAMES];
 
-        u32   EXT_count;
-        u32   layer_count;
+        u32     EXT_count;
+        u32     layer_count;
+        u32     PDEV_EXT_count;
+
+        slop_t  __[4];
 
         char* EXT_names[VK_MAX_COUNT_EXT];
         char* layer_names[VK_MAX_COUNT_LAYERS];
+        char* PDEV_EXT_names[VK_MAX_COUNT_PDEV_EXT];
 
         struct vk_stored_PDEV_familes {
             union vk_device_queue_family_idx  indecies;
@@ -96,7 +105,15 @@ struct global_memory {
         }
         PDEV_familes;
 
-        slop_t _[4];
+        struct vk_swapchain_details {
+            VkSurfaceCapabilitiesKHR    capabilities;
+            VkSurfaceFormatKHR          format[VK_MAX_COUNT_SURFACE_FORMATS];
+            VkPresentModeKHR            present_mode[VK_MAX_COUNT_SURFACE_FORMATS];
+
+            u32 format_count;
+            u32 present_mode_count;
+        }
+        swapchain;
 
         VkQueue graphics_queue;
         VkQueue present_queue;
@@ -115,7 +132,13 @@ struct global_memory {
             VkPhysicalDeviceProperties          property[VK_MAX_COUNT_PHYSICAL_DEVICES];
             VkPhysicalDeviceFeatures            feature[VK_MAX_COUNT_PHYSICAL_DEVICES];
             VkQueueFamilyProperties             families[VK_MAX_COUNT_PHYSICAL_DEVICES][VK_MAX_COUNT_QUEUE_FAMILY];
+            VkExtensionProperties               EXT[VK_MAX_COUNT_PDEV_EXT];
+            VkSurfaceCapabilitiesKHR            surface_capabilities[VK_MAX_COUNT_PHYSICAL_DEVICES];
+            VkSurfaceFormatKHR                  surface_format[VK_MAX_COUNT_PHYSICAL_DEVICES][VK_MAX_COUNT_SURFACE_FORMATS];
+            VkPresentModeKHR                    present_mode[VK_MAX_COUNT_PHYSICAL_DEVICES][VK_MAX_COUNT_PRESENT_MODES];
             union vk_device_queue_family_idx    family_indecies[VK_MAX_COUNT_PHYSICAL_DEVICES];
+            u32                                 surface_format_count[VK_MAX_COUNT_PHYSICAL_DEVICES];
+            u32                                 present_mode_count[VK_MAX_COUNT_PHYSICAL_DEVICES];
             u32                                 family_count[VK_MAX_COUNT_PHYSICAL_DEVICES];
             u32                                 device_count;
             slop_t                              _[4];
@@ -383,6 +406,59 @@ void vk_enumerate_EXTs(VkExtensionProperties EXTs[VK_MAX_COUNT_EXT], u32*const c
 }
 
 static
+void vk_find_required_EXTs(       literal_t             required_EXT[],
+                            const u32                   required_EXT_count,
+                            const VkExtensionProperties available_EXT[],
+                            const u32                   available_EXT_count,
+                                  char                  buffer[],
+                            const size_t                buffer_size,
+                                  char*                 EXT_names[],
+                                  u32*                  EXT_count)
+{
+    *EXT_count = 0;
+#if DEBUG
+        for (u32 A = 0; A < available_EXT_count; ++A)
+        {
+            dbgprint("available_EXT[%u]: %s", A, available_EXT[A].extensionName);
+        }
+#endif
+
+    size_t offset = 0;
+    for (u32 R = 0; R < required_EXT_count; ++R)
+    {
+        u32 found = 0x0;
+        for (u32 A = 0; A < available_EXT_count; ++A)
+        {
+            const size_t length = strlen(required_EXT[R]);
+            if (!strncmp(available_EXT[A].extensionName, required_EXT[R], length))
+            {
+                const s64 size_left = buffer_size - offset;
+                ASSERT(size_left >= 0);
+
+                EXT_names[*EXT_count] = &buffer[offset];
+                {
+                    strncpy_s(EXT_names[*EXT_count], size_left, available_EXT[A].extensionName, length);
+                    {
+                        dbgprint("Found EXT: [%u] %s", *EXT_count, EXT_names[*EXT_count]);
+                    }
+
+                    ++(*EXT_count);
+                }
+
+                offset += length + 1;
+
+                found = 0x1;
+                break;
+            }
+        }
+
+#if FIXME(DO_IF_REQUIRED_EXT_NOT_FOUND)
+        ASSERT(found);
+#endif
+    }
+}
+
+static
 void vk_acquire_EXTs(VkExtensionProperties  available_EXT[VK_MAX_COUNT_LAYERS],
                      u32*                   available_EXT_count,
                      char                   names_buffer[BUFFER_SIZE_VK_EXT_NAMES],
@@ -406,6 +482,8 @@ void vk_acquire_EXTs(VkExtensionProperties  available_EXT[VK_MAX_COUNT_LAYERS],
 
     const u32 required_EXT_count = sizeof_array(required_EXT);
 
+    vk_find_required_EXTs(required_EXT, required_EXT_count, available_EXT, *available_EXT_count, names_buffer, BUFFER_SIZE_VK_EXT_NAMES, EXT_names, EXT_count);
+#if 0
     *EXT_count = 0;
 
     size_t offset = 0;
@@ -441,6 +519,7 @@ void vk_acquire_EXTs(VkExtensionProperties  available_EXT[VK_MAX_COUNT_LAYERS],
         ASSERT(found);
 #endif
     }
+#endif
 }
 
 static
@@ -547,129 +626,299 @@ void dbg_print_VkQueueFlagBits(VkQueueFlagBits flags)
 #endif
 }
 
-static inline
-VkBool32 vk_is_PDEV_suitable(        VkPhysicalDevice            device,
-                                     VkSurfaceKHR                surface,
-                             const   VkPhysicalDeviceProperties* property,
-                             const   VkPhysicalDeviceFeatures*   feature,
-                             const   VkQueueFamilyProperties     family[VK_MAX_COUNT_QUEUE_FAMILY],
-                             union   vk_device_queue_family_idx* family_indecies,
-                             const   u32                         family_count)
+
+static
+VkSurfaceFormatKHR vk_choose_surface_format(VkSurfaceFormatKHR format[VK_MAX_COUNT_SURFACE_FORMATS], const u32 count)
 {
-    ASSERT(property);
-    ASSERT(feature);
-    ASSERT(family);
-    ASSERT(family_count < VK_MAX_COUNT_QUEUE_FAMILY);
-
-    VkBool32 device_ok = (
-            property->deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-            &&
-            feature->geometryShader
-    );
-
-    if (!device_ok)
+    for (u32 i = 0; i < count; ++i)
     {
-        return VK_FALSE;
-    }
+        dbgprint("Surface Format[%u]: fmt:\"%s\" colorspace:\"%s\"",
+                i,
+                string_VkFormat(format[i].format),
+                string_VkColorSpaceKHR(format[i].colorSpace));
 
-    {
-#if DEBUG
-        for (u32 i = 0; i < family_count; ++i)
+        if ((format[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+                &&
+            (format[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR))
         {
-            VkBool32 presenting_supported = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presenting_supported);
-
-            dbgprint("Queue Family[%u]: can present = %s", i, presenting_supported == VK_TRUE ? "true" : "false");
-            dbg_print_VkQueueFlagBits(family[i].queueFlags);
-        }
-#endif
-
-        for (u32 i = 0; i < family_count; ++i)
-        {
-            VkBool32 got_graphics = vk_is_family_index_valid(family_indecies->graphics);
-            if (!got_graphics)
-            {
-                if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-                {
-                    family_indecies->graphics = i;
-
-                    got_graphics = VK_TRUE;
-                }
-            }
-
-            VkBool32 got_present = vk_is_family_index_valid(family_indecies->present);
-            if (!got_present)
-            {
-                VkBool32 supported = VK_FALSE;
-                vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &supported);
-                if (supported && (i != family_indecies->graphics))
-                {
-                    family_indecies->present = i;
-
-                    got_present = VK_TRUE;
-                }
-            }
-
-            VkBool32 done = (got_present && got_graphics);
-            if (done)
-            {
-                return VK_TRUE;
-            }
+            return format[i];
         }
     }
 
-    return VK_FALSE;
+    return (const VkSurfaceFormatKHR) {
+        .format = VK_FORMAT_UNDEFINED,
+        .colorSpace = 0x0,
+    };
 }
 
 static
-VkPhysicalDevice vk_acquire_PDEV(VkInstance                                  instance,
-                                 struct vk_physical_device_enumeration_data* data,
-                                 struct vk_stored_PDEV_familes*              store,
-                                 VkSurfaceKHR                                surface)
+VkPresentModeKHR vk_choose_present_mode(VkPresentModeKHR mode[VK_MAX_COUNT_PRESENT_MODES], const u32 count)
+{
+    for (u32 i = 0; i < count; ++i)
+    {
+        if (mode[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+        {
+            return mode[i];
+        }
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+static
+u32 u32_clamp(const u32 value, const u32 low_bound, const u32 high_bound)
+{
+    if (value < low_bound)
+    {
+        return low_bound;
+    }
+    if (value > high_bound)
+    {
+        return high_bound;
+    }
+
+    return value;
+}
+
+static
+VkExtent2D vk_choose_extent_2d(const VkSurfaceCapabilitiesKHR capabilities, HWND window)
+{
+    ASSERT(window);
+
+    if (capabilities.currentExtent.width != UINT32_MAX)
+    {
+        return capabilities.currentExtent;
+    }
+
+    RECT rect;
+    {
+        GetWindowRect(window, &rect);
+    }
+
+#define WIN32_RECT_WIDTH(IN_RECT)  (IN_RECT).right  - (IN_RECT).left
+#define WIN32_RECT_HEIGHT(IN_RECT) (IN_RECT).bottom - (IN_RECT).top
+
+    VkExtent2D actual_extent = {
+        .width = u32_clamp(WIN32_RECT_WIDTH(rect), capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+        .height = u32_clamp(WIN32_RECT_HEIGHT(rect), capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+    };
+
+    return actual_extent;
+}
+
+static
+VkPhysicalDevice vk_acquire_PDEV(VkInstance                                       instance,
+                                 struct vk_physical_device_enumeration_data*const data,
+                                 struct vk_stored_PDEV_familes*             const store,
+                                 VkSurfaceKHR                                     surface)
 {
     ASSERT(instance);
     ASSERT(data);
     ASSERT(store);
 
+#if DEBUG
+    {
+        const union vk_device_queue_family_idx fi = {
+            .graphics = 0xAA,
+            .present  = 0xCC,
+        };
+
+        ASSERT(fi.graphics == fi.arr[QUEUE_INDEX_GRAPHICS]);
+        ASSERT(fi.present == fi.arr[QUEUE_INDEX_PRESENT]);
+    }
+#endif
+
+
     // Enumerating Physical Devices
     {
         data->device_count = VK_MAX_COUNT_PHYSICAL_DEVICES;
 
-        ASSERT_FN(VK_SUCCESS ==,
+        VK_ASSERT_FN(VK_SUCCESS ==,
         vkEnumeratePhysicalDevices(instance, &data->device_count, data->device)
         );
     }
 
-    for (u32 i = 0; i < data->device_count; ++i)
+    for (u32 D = 0; D < data->device_count; ++D)
     {
-        VkPhysicalDevice*                          device = &data->device[i];
-        VkPhysicalDeviceProperties*            properties = &data->property[i];
-        VkPhysicalDeviceFeatures*                features = &data->feature[i];
-        union vk_device_queue_family_idx* family_indecies = &data->family_indecies[i];
+        VkPhysicalDevice* device = &data->device[D];
+
+        VkPhysicalDeviceProperties* properties = &data->property[D];
+        {
+            vkGetPhysicalDeviceProperties(*device, properties);
+        }
+
+        VkPhysicalDeviceFeatures* features = &data->feature[D];
+        {
+            vkGetPhysicalDeviceFeatures(*device, features);
+        }
+
+        VkQueueFamilyProperties* families_per_device = data->families[D];
+        {
+            data->family_count[D] = VK_MAX_COUNT_QUEUE_FAMILY;
+#if DEBUG
+            u32 available_family_count = 0;
+            {
+                vkGetPhysicalDeviceQueueFamilyProperties(*device, &available_family_count, NULL);
+                vkGetPhysicalDeviceQueueFamilyProperties(*device, &data->family_count[D], families_per_device);
+            }
+
+            ASSERT(available_family_count < VK_MAX_COUNT_QUEUE_FAMILY);
+#endif
+            vkGetPhysicalDeviceQueueFamilyProperties(*device, &data->family_count[D], families_per_device);
+            dbgprint("Device[%u]: families_per_device = %u", D, data->family_count[D]);
+        }
+
+        VkSurfaceCapabilitiesKHR* surface_capabilities = &data->surface_capabilities[D];
+        {
+            VK_ASSERT_FN(VK_SUCCESS ==,
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(*device, surface, surface_capabilities)
+            );
+        }
+
+#if DEBUG
+        {
+            u32 count = 0;
+            VK_ASSERT_FN(VK_SUCCESS ==,
+            vkGetPhysicalDeviceSurfaceFormatsKHR(*device, surface, &count, NULL)
+            );
+
+            dbgprint("Device[%u]: Surface Present Modes Count = %u", D, count);
+            ASSERT(count < VK_MAX_COUNT_SURFACE_FORMATS);
+        }
+#endif
+        VkSurfaceFormatKHR* surface_format = data->surface_format[D];
+        {
+            data->surface_format_count[D] = VK_MAX_COUNT_SURFACE_FORMATS;
+
+            VK_ASSERT_FN(VK_SUCCESS ==,
+            vkGetPhysicalDeviceSurfaceFormatsKHR(*device, surface, &data->surface_format_count[D], surface_format)
+            );
+        }
+
+#if DEBUG
+        {
+            u32 count = 0;
+            VK_ASSERT_FN(VK_SUCCESS ==,
+            vkGetPhysicalDeviceSurfacePresentModesKHR(*device, surface, &count, NULL)
+            );
+
+            dbgprint("Device[%u]: Surface Present Modes Count = %u", D, count);
+            ASSERT(count < VK_MAX_COUNT_PRESENT_MODES);
+        }
+#endif
+        VkPresentModeKHR* present_mode = data->present_mode[D];
+        {
+            data->present_mode_count[D] = VK_MAX_COUNT_PRESENT_MODES;
+
+            VK_ASSERT_FN(VK_SUCCESS ==,
+            vkGetPhysicalDeviceSurfacePresentModesKHR(*device, surface, &data->present_mode_count[D], present_mode)
+            );
+
+        }
+
+        union vk_device_queue_family_idx* family_indecies = &data->family_indecies[D];
         {
             memset(family_indecies, 0xFF, sizeof(union vk_device_queue_family_idx));
         }
 
-        vkGetPhysicalDeviceProperties(*device, properties);
-        vkGetPhysicalDeviceFeatures(*device,   features);
-
-        VkQueueFamilyProperties* families_per_device = data->families[i];
+        // Is Device Suitable?
         {
-            data->family_count[i] = VK_MAX_COUNT_QUEUE_FAMILY;
+            VkBool32 device_ok = (properties->deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+                                  &&
+                                  features->geometryShader
+            );
 
-            vkGetPhysicalDeviceQueueFamilyProperties(*device, &data->family_count[i], families_per_device);
-        }
-
-        if (vk_is_PDEV_suitable(*device, surface, properties, features, families_per_device, family_indecies, data->family_count[i]))
-        {
-            // Storing family data for chosen Physical Device
+            if (!device_ok)
             {
-                store->count = data->family_count[i];
-                store->indecies = *family_indecies;
-                memcpy(store->property, families_per_device, sizeof(store->property));
+                continue;
             }
 
-            return *device;
+            const u32 family_count = data->family_count[D];
+            const VkQueueFamilyProperties*const family = families_per_device;
+
+            literal_t required_EXT[] = {
+                VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            };
+
+            const u32 required_EXT_count = sizeof_array(required_EXT);
+
+            for (family_index_t F = 0; F < family_count; ++F)
+            {
+                VkBool32 got_graphics = vk_is_family_index_valid(family_indecies->graphics);
+                if (!got_graphics)
+                {
+                    if (family[F].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                    {
+                        family_indecies->graphics = F;
+
+                        got_graphics = VK_TRUE;
+                    }
+                }
+
+                VkBool32 got_present = vk_is_family_index_valid(family_indecies->present);
+                if (!got_present)
+                {
+                    VkBool32 supported = VK_FALSE;
+                    vkGetPhysicalDeviceSurfaceSupportKHR(*device, F, surface, &supported);
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
+                    if (supported && (F != family_indecies->graphics))
+#else
+                    if (supported)
+#endif
+                    {
+                        family_indecies->present = F;
+
+                        got_present = VK_TRUE;
+                    }
+                }
+
+                VkBool32 done = (got_present && got_graphics);
+                if (done)
+                {
+#if DEBUG
+                    u32 available_EXT_count = 0;
+                    {
+                        ASSERT_FN(VK_SUCCESS ==,
+                        vkEnumerateDeviceExtensionProperties(*device, NULL, &available_EXT_count, NULL)
+                        );
+
+                        ASSERT(available_EXT_count < VK_MAX_COUNT_PDEV_EXT);
+                    }
+#endif
+#if FIXME(1)
+                    g->PDEV_EXT_count = VK_MAX_COUNT_PDEV_EXT;
+                    g->PDEV_EXT_names[0] = g->PDEV_EXT_names_buffer;
+
+                    ASSERT_FN(VK_SUCCESS ==,
+                    vkEnumerateDeviceExtensionProperties(*device, NULL, &g->PDEV_EXT_count, data->EXT)
+                    );
+
+                    vk_find_required_EXTs(required_EXT,             required_EXT_count,
+                                          data->EXT,                g->PDEV_EXT_count,
+                                          g->PDEV_EXT_names_buffer, BUFFER_SIZE_VK_PDEV_EXT_NAMES,
+                                          g->PDEV_EXT_names,        &g->PDEV_EXT_count);
+#endif
+
+                    // Storing family data for chosen Physical Device
+                    {
+                        store->count = data->family_count[D];
+                        store->indecies = *family_indecies;
+                        memcpy(store->property, families_per_device, store->count * sizeof(store->property[0]));
+                    }
+
+                    // Storing swapchain data
+                    {
+                        g->swapchain.present_mode_count = data->present_mode_count[D];
+                        g->swapchain.format_count = data->surface_format_count[D];
+                        g->swapchain.capabilities = *surface_capabilities;
+
+                        memcpy(g->swapchain.format, surface_format, g->swapchain.format_count * sizeof(data->surface_format[D][0]));
+                        memcpy(g->swapchain.present_mode, present_mode, g->swapchain.present_mode_count * sizeof(data->present_mode[D][0]));
+                    }
+
+                    return *device;
+                }
+            }
         }
     }
 
@@ -679,12 +928,13 @@ VkPhysicalDevice vk_acquire_PDEV(VkInstance                                  ins
 
 
 static
-VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhysicalDevice PDEV)
+VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhysicalDevice PDEV, literal_t EXT_names[VK_MAX_COUNT_PDEV_EXT], const u32 EXT_count)
 {
     ASSERT(PDEV);
     ASSERT(indecies.graphics < g->PDEV_familes.count);
 
 
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
     const float graphics_queue_prio[] = {
         [0] = 1.0f,
     };
@@ -722,6 +972,20 @@ VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhys
             .pQueuePriorities = present_queue_prio,
         },
     };
+#else // VK_USING_SAME_QUEUE_FAMILY
+    const float queue_prio = 1.0f;
+
+    const VkDeviceQueueCreateInfo queue_ci[] = {
+        [0] = {
+            .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .pNext            = NULL,
+            .flags            = 0x0,
+            .queueFamilyIndex = indecies.arr[0],
+            .queueCount       = 1,
+            .pQueuePriorities = &queue_prio,
+        },
+    };
+#endif
 
     const VkPhysicalDeviceFeatures device_features = {
         .robustBufferAccess            			 = VK_FALSE,
@@ -793,8 +1057,8 @@ VkDevice vk_acquire_LDEV(const union vk_device_queue_family_idx indecies, VkPhys
 #else
 #   pragma message("warning: Should do something about it please")
 #endif
-        .enabledExtensionCount   = 0,
-        .ppEnabledExtensionNames = NULL,
+        .enabledExtensionCount   = EXT_count,
+        .ppEnabledExtensionNames = EXT_names,
 
         .pEnabledFeatures        = &device_features,
     };
@@ -911,14 +1175,15 @@ int WinMain(_In_     HINSTANCE instance,
         ERROR_MAIN_RETURN("vk_acquire_PDEV()");
     }
 
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
     ASSERT(g->PDEV_familes.indecies.graphics != g->PDEV_familes.indecies.present);
+#endif
 
-    VkDevice vk_device = vk_acquire_LDEV(g->PDEV_familes.indecies, vk_PDEV);
+    VkDevice vk_device = vk_acquire_LDEV(g->PDEV_familes.indecies, vk_PDEV, (literal_t*)g->PDEV_EXT_names, g->PDEV_EXT_count);
     if (vk_device == VK_NULL_HANDLE)
     {
         ERROR_MAIN_RETURN("vk_acquire_LDEV()");
     }
-
 
     // Getting queues
     {
@@ -933,6 +1198,54 @@ int WinMain(_In_     HINSTANCE instance,
         }
     }
 
+    VkPresentModeKHR vk_present_mode = vk_choose_present_mode(g->swapchain.present_mode, g->swapchain.present_mode_count);
+    VkExtent2D vk_extent = vk_choose_extent_2d(g->swapchain.capabilities, window);
+    VkSurfaceFormatKHR vk_surface_format = vk_choose_surface_format(g->swapchain.format, g->swapchain.format_count);
+    {
+        ASSERT(vk_surface_format.format != VK_FORMAT_UNDEFINED);
+    }
+
+
+    u32 image_count = g->swapchain.capabilities.minImageCount + 1;
+    {
+
+        if ((image_count > g->swapchain.capabilities.maxImageCount)
+                &&
+            (g->swapchain.capabilities.minImageCount > 0))
+        {
+            image_count = g->swapchain.capabilities.maxImageCount;
+        }
+    }
+
+    const VkSwapchainCreateInfoKHR swapchain_ci = {
+        .sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext                 = NULL,
+        .flags                 = 0x0,
+        .surface               = vk_surface,
+        .minImageCount         = image_count,
+        .imageFormat           = vk_surface_format.format,
+        .imageColorSpace       = vk_surface_format.colorSpace,
+        .imageExtent           = vk_extent,
+        .imageArrayLayers      = 1,
+        .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+#if VK_USING_DIFFERENT_QUEUE_FAMILIES
+        .imageSharingMode      = VK_SHARING_MODE_CONCURRENT,
+        .queueFamilyIndexCount = QUEUE_INDEX_ENUM_MAX_SIZE,
+        .pQueueFamilyIndices   = (const u32[QUEUE_INDEX_ENUM_MAX_SIZE]){0,0},
+#else
+        .imageSharingMode      = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices   = NULL,
+#endif
+        .preTransform          = 0x0,
+        .compositeAlpha        = 0x0,
+        .presentMode           = vk_present_mode,
+        .clipped               = VK_FALSE,
+        .oldSwapchain          = NULL,
+    };
+
+    UNREFERENCED_PARAMETER(swapchain_ci);
+
     while(g_running)
     {
         process_messages();
@@ -940,8 +1253,14 @@ int WinMain(_In_     HINSTANCE instance,
 
 #if FIXME(DO_I_HAVE_TO_DESTROY_VK_DBG_MESSENGER)
     ASSERT(vk_dbg_messenger);
-    g_vk_destroy_dbg_messenger(vk_instance, vk_dbg_messenger, NULL);
+    ASSERT(vk_instance);
+    ASSERT(vk_device);
+    ASSERT(vk_PDEV);
+    ASSERT(vk_surface);
 
+    vkDestroySurfaceKHR(vk_instance, vk_surface, NULL);
+    vkDestroyDevice(vk_device, NULL);
+    g_vk_destroy_dbg_messenger(vk_instance, vk_dbg_messenger, NULL);
     vkDestroyInstance(vk_instance, NULL);
 #endif
 
